@@ -143,9 +143,7 @@ aside{position:sticky;top:16px}
     </div>
 
     <div class="amendonly">
-      <label for="origAmount">Original amount (only if you haven’t added the original statement)</label>
-      <div class="row"><input type="text" id="origAmount" placeholder="$75,194.00"><select id="origOutcome" aria-label="Original amount was"><option value="payable">payable</option><option value="refundable">refundable</option></select></div>
-      <p class="hint" style="margin-top:4px">For several periods, enter the total for all of them.</p>
+      <div id="origBox"></div>
       <label for="amendReason">Reason for amendment (optional)</label>
       <input type="text" id="amendReason" placeholder="e.g. remove the PAYG instalment due of $23,864">
       <div class="extra"><label class="tick"><input type="checkbox" id="origPaid"> The original was payable and has already been paid</label></div>
@@ -372,27 +370,46 @@ aside{position:sticky;top:16px}
 
     // Amendment
     let e1 = null, e2 = null, e3 = null;
+    let periodOwe = stmts.map(s => s.amount === undefined ? 0 : signed(s));   // what each period adds to the total (+ owed, - refund)
     if (amended) {
-      const origs = stmts.map(s => (originals || []).find(o => o.periodEnd && s.periodEnd && o.periodEnd.getTime() === s.periodEnd.getTime()));
-      const typed = a.originalAmount !== null && a.originalAmount !== undefined;
-      if (origs.some(o => !o) && !typed) {
-        e1 = (multi ? "These Activity Statements have been amended." : "This Activity Statement has been amended.") + " " + NR("add the original statement or type the original amount");
+      const samePeriod = (o, s) => o.periodEnd && s.periodEnd && o.periodEnd.getTime() === s.periodEnd.getTime();
+      const typedFor = s => {
+        const t = a.originalAmounts && s.periodEnd && a.originalAmounts[ymd(s.periodEnd)];
+        if (t && t.cents !== null && t.cents !== undefined) return { amount: t.cents, outcome: t.outcome || "payable", typed: true };
+        if (!multi && a.originalAmount !== null && a.originalAmount !== undefined) return { amount: a.originalAmount, outcome: a.originalOutcome || "payable", typed: true };
+        return null;
+      };
+      const origs = stmts.map(s => (originals || []).find(o => samePeriod(o, s)) || typedFor(s));
+      const reason = (a.amendReason || "").trim().replace(/\.$/, "");
+      const lead = multi ? "These Activity Statements have been amended" : "This Activity Statement has been amended";
+      const needOriginals = !multi || a.originalPaid;   // several periods not yet paid only list the amended amounts
+      if (origs.some(o => !o) && needOriginals) {
+        e1 = `${lead}. ` + NR(multi ? "add the original statement or type the original amount for each period" : "add the original statement or type the original amount");
+      } else if (origs.some(o => !o)) {
+        if (reason) e1 = `${lead} to ${reason}.`;
       } else {
-        const fromFiles = origs.every(Boolean);
-        const oNet = fromFiles ? origs.reduce((t, o) => t + signed(o), 0) : (a.originalOutcome === "refundable" ? -a.originalAmount : a.originalAmount);
-        if (!fromFiles) flags.push(`Original amount typed in: ${money(Math.abs(oNet))} ${oNet < 0 ? "refundable" : "payable"}${multi ? " (total for all periods)" : ""}.`);
+        const typedPeriods = stmts.filter((s, i) => origs[i].typed).map(s => fmtDate(s.periodEnd));
+        if (typedPeriods.length) flags.push(`Original amount typed in for ${joinList(typedPeriods)}.`);
+        const oSigned = origs.map(o => signed(o));
+        const oNet = oSigned.reduce((t, v) => t + v, 0);
         const word = v => v < 0 ? "refundable" : "payable";
-        const diff = Math.abs(net - oNet);
-        const reason = (a.amendReason || "").trim().replace(/\.$/, "");
-        const lead = multi ? "These Activity Statements have been amended" : "This Activity Statement has been amended";
-        e1 = `${lead}${reason ? " to " + reason : ""}. The original amount ${word(oNet)} was ${money(Math.abs(oNet))} and the amended amount ${word(net)} is ${money(Math.abs(net))}, a difference of ${money(diff)}.`;
-        if (a.originalPaid && oNet > 0) {
-          if (net < oNet) {
-            e2 = `As the original amount of ${money(oNet)} has already been paid, this results in a refund due of **${money(oNet - net)}** from the Australian Taxation Office.`;
-            net = -(oNet - net); // what the client is now owed
+        // Single period: full Amendment Summary with amounts. Several periods: only a reason, if one is given.
+        if (!multi) e1 = `${lead}${reason ? " to " + reason : ""}. The original amount ${word(oNet)} was ${money(Math.abs(oNet))} and the amended amount ${word(net)} is ${money(Math.abs(net))}, a difference of ${money(Math.abs(net - oNet))}.`;
+        else if (reason) e1 = `${lead} to ${reason}.`;
+        if (a.originalPaid) {
+          // The originals are settled, so each period now only adds its difference.
+          periodOwe = stmts.map((s, i) => signed(s) - oSigned[i]);
+          const after = periodOwe.reduce((t, v) => t + v, 0);
+          if (!multi) {
+            if (after < 0) e2 = `As the original amount of ${money(Math.abs(oNet))} has already been paid, this results in a refund due of **${money(-after)}** from the Australian Taxation Office.`;
+            else if (after > 0) e2 = `As the original amount of ${money(Math.abs(oNet))} has already been paid, the additional amount payable is **${money(after)}**.`;
+            else e2 = `As the original amount of ${money(Math.abs(oNet))} has already been paid, no further payment is required.`;
           } else {
-            review.push("original already paid but the amended amount is higher");
+            e2 = periodOwe.every(v => v <= 0)
+              ? "As the original amounts have already been paid, this results in refunds due from the Australian Taxation Office."
+              : "As the original amounts have already been paid, the amounts below are the differences between the original and amended Activity Statements.";
           }
+          net = after;
         }
         if (a.rolledOver) {
           if (net < 0) e3 = `This refund will be credited against your next ${both ? "Activity Statement" : TYPE} liability. No payment is required at this time.`;
@@ -437,8 +454,7 @@ aside{position:sticky;top:16px}
     L.push(a4 + " " + a5); blank();
     // E1 to E3
     if (amended) {
-      L.push("**Amendment Summary**");
-      L.push(e1); blank();
+      if (e1) { L.push("**Amendment Summary**"); L.push(e1); blank(); }
       if (e2) { L.push(e2); blank(); }
       if (e3) { L.push(e3); blank(); }
     }
@@ -470,11 +486,12 @@ aside{position:sticky;top:16px}
     // so the bold total is always what the client actually pays or receives.
     const typeWord = both ? "Activity Statement" : TYPE;
     const payWord = typeWord;
-    if (multi && !e2) {
-      const anyRefund = stmts.some(s => s.outcome === "refundable"), anyPay = stmts.some(s => s.outcome === "payable");
+    if (multi) {
+      const anyRefund = periodOwe.some(v => v < 0), anyPay = periodOwe.some(v => v > 0);
       const mixed = anyRefund && anyPay;
       L.push(mixed ? "Amounts payable and refundable are as follows:" : anyRefund ? "Amounts refundable are as follows:" : "Amounts payable are as follows:");
-      stmts.forEach(s => L.push(`• ${fmtDate(s.periodEnd)}    ${money(s.amount)}${mixed ? " " + (s.outcome === "nil" ? "payable" : s.outcome) : ""}`));
+      stmts.forEach((s, i) => L.push(`• ${fmtDate(s.periodEnd)}    ${money(Math.abs(periodOwe[i]))}${mixed ? " " + (periodOwe[i] < 0 ? "refundable" : "payable") : ""}`));
+      blank();
     }
     const owe0 = outcome === "payable" ? amt : outcome === "refundable" ? -amt : 0;   // + the client owes, - the ATO owes the client
     const adj = [];
@@ -545,7 +562,7 @@ aside{position:sticky;top:16px}
 
     // Collation details
     const last = stmts[stmts.length - 1];
-    const stmtLabel = s => `${s.amended ? "Amended " : ""}${s.type === "IAS" ? "Instalment" : "Business"} Activity Statement ${MONTHS[s.periodEnd.getUTCMonth()]} ${s.periodEnd.getUTCFullYear()}`;
+    const stmtLabel = s => `${s.amended ? "Amended " : ""}${s.type === "IAS" ? "Instalment" : "Business"} Activity Statement`;
     const collation = {
       entity: (entity || "").toUpperCase(),
       entityName: entity,
@@ -1285,7 +1302,7 @@ function answers() {
     address: $("address").value.split("\n").map(s => s.trim()).filter(Boolean),
     amendReason: $("amendReason").value,
     originalPaid: $("origPaid").checked, rolledOver: $("rolled").checked,
-    originalAmount: $("origAmount").value.trim() ? C.toCents($("origAmount").value) : null, originalOutcome: $("origOutcome").value,
+    originalAmount: null, originalAmounts: state.origVals,
     icaCredit: on("ica") ? cents("icaCredit") : 0,
     planAccounts: on("plan") ? $("planAccounts").value : "", addToPlan: on("plan") && $("addToPlan").checked,
     icaBalance: on("icabal") ? cents("icaBalance") : 0,
@@ -1295,6 +1312,38 @@ function answers() {
     closureStart: on("closure") ? fromIso($("closureStart").value) : null, reopen: on("closure") ? fromIso($("reopen").value) : null,
     additional: on("add") ? $("additional").value : "",
   };
+}
+// One "original amount" box per amended period that has no original statement added
+state.origVals = {}; state.origKey = "";
+function renderOrigBox(main, originals) {
+  const box = $("origBox");
+  const key8 = d => d.toISOString().slice(0, 10).replace(/-/g, "");
+  const need = main.filter(f => f.st.amended && f.st.periodEnd && !originals.some(o => o.st.periodEnd && o.st.periodEnd.getTime() === f.st.periodEnd.getTime()))
+    .sort((x, y) => x.st.periodEnd - y.st.periodEnd);
+  const key = need.map(f => key8(f.st.periodEnd)).join(",");
+  if (key === state.origKey) return;
+  state.origKey = key; box.innerHTML = "";
+  if (!need.length) return;
+  const multiP = main.length > 1;
+  const head = document.createElement("label");
+  head.textContent = multiP ? "Original amount for each period (only for periods without the original statement added)" : "Original amount (only if you haven\u2019t added the original statement)";
+  box.appendChild(head);
+  need.forEach(f => {
+    const k = key8(f.st.periodEnd);
+    const v = state.origVals[k] || (state.origVals[k] = { cents: null, outcome: "payable" });
+    const row = document.createElement("div"); row.className = "row"; row.style.marginBottom = "6px";
+    const inp = document.createElement("input"); inp.type = "text"; inp.placeholder = multiP ? C.fmtDate(f.st.periodEnd) + " e.g. $75,194.00" : "$75,194.00";
+    inp.setAttribute("aria-label", "Original amount for " + C.fmtDate(f.st.periodEnd));
+    if (v.cents !== null) inp.value = C.money(v.cents);
+    const sel = document.createElement("select"); sel.setAttribute("aria-label", "Original amount for " + C.fmtDate(f.st.periodEnd) + " was");
+    ["payable", "refundable"].forEach(o => { const op = document.createElement("option"); op.value = o; op.textContent = o; sel.appendChild(op); });
+    sel.value = v.outcome;
+    inp.addEventListener("input", () => { v.cents = inp.value.trim() ? C.toCents(inp.value) : null; refresh(); });
+    sel.addEventListener("change", () => { v.outcome = sel.value; refresh(); });
+    if (multiP) { const lab = document.createElement("p"); lab.className = "hint"; lab.style.margin = "6px 0 2px"; lab.textContent = C.fmtDate(f.st.periodEnd); box.appendChild(lab); }
+    row.appendChild(inp); row.appendChild(sel); box.appendChild(row);
+  });
+  if (multiP) { const h = document.createElement("p"); h.className = "hint"; h.style.marginTop = "4px"; h.textContent = "Needed when the originals have already been paid, so each period\u2019s difference can be shown."; box.appendChild(h); }
 }
 function prefill(main) {
   const s0 = main[0] && main[0].st;
@@ -1389,6 +1438,7 @@ function refresh(filesChanged) {
     state.result = null; setChecks(main.flatMap(f => f.st.flags).map(t => ["block", t])); $("create").disabled = true; return;
   }
   prefill(main);
+  renderOrigBox(main, originals);
   const r = C.compose(main.map(f => f.st), originals.map(f => f.st), answers());
   state.result = r; state.main = main;
   const autoTxt = r.autoOverdue ? "Auto (immediately)" : "Auto (by due date)";
@@ -1426,8 +1476,8 @@ $("resetBtn").onclick = () => {
   state.files = []; state.lastEntity = null; state.letterPages = 1; state.edited = false; state.editText = ""; state.letterBytes = null; state.packBytes = null;
   document.body.classList.remove("edited"); $("editBtn").textContent = "Edit wording";
   $("letterDate").value = iso(C.todayUTC()); $("signer").value = "Renee";
-  ["greeting", "address", "origAmount", "amendReason", "icaCredit", "icaBalance", "otherAccName", "otherAccAmount", "paidAmount", "paidDate", "gicAmount", "gicPeriod", "closureStart", "reopen", "additional"].forEach(id => { $(id).value = ""; });
-  $("origOutcome").value = "payable"; $("planAccounts").selectedIndex = 0; $("otherAccPick").value = "Income Tax"; $("otherAccName").hidden = true;
+  ["greeting", "address", "amendReason", "icaCredit", "icaBalance", "otherAccName", "otherAccAmount", "paidAmount", "paidDate", "gicAmount", "gicPeriod", "closureStart", "reopen", "additional"].forEach(id => { $(id).value = ""; });
+  state.origVals = {}; state.origKey = ""; $("origBox").innerHTML = ""; $("planAccounts").selectedIndex = 0; $("otherAccPick").value = "Income Tax"; $("otherAccName").hidden = true;
   ["origPaid", "rolled", "addToPlan", "forceAmended"].forEach(id => { $(id).checked = false; });
   document.querySelector("input[name=overdue][value=auto]").checked = true;
   document.querySelectorAll(".extra[data-x]").forEach(x => { x.classList.remove("on"); x.querySelector(".tick input").checked = false; });
