@@ -78,6 +78,11 @@ aside{position:sticky;top:16px}
 .sheet .amt{position:relative;white-space:nowrap}
 .sheet .val{position:absolute;top:0}
 .sheet .sig{display:block;height:24px;margin:3px 0 5px}
+.sheet .tbl{border-collapse:collapse;width:100%;margin:2px 0}
+.sheet .tbl td{padding:1px 0;white-space:nowrap}
+.sheet .tbl td.r{text-align:right;padding-left:12px}
+.sheet .tbl tr.th td{font-weight:700;border-bottom:1px solid #999}
+.sheet .tbl tr.tt td{font-weight:700;border-top:1px solid #999}
 .sheet .nr{background:#D4E2DD;font-weight:700;padding:0 3px}
 .sheet .empty{color:#56776C;text-align:center;padding-top:110px;font-family:Montserrat,Arial,sans-serif;font-size:14px}
 .actions{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:16px}
@@ -371,6 +376,7 @@ aside{position:sticky;top:16px}
     // Amendment
     let e1 = null, e2 = null, e3 = null;
     let periodOwe = stmts.map(s => s.amount === undefined ? 0 : signed(s));   // what each period adds to the total (+ owed, - refund)
+    let origSigned = null;   // each period’s original amount, when known (amended letters)
     if (amended) {
       const samePeriod = (o, s) => o.periodEnd && s.periodEnd && o.periodEnd.getTime() === s.periodEnd.getTime();
       const typedFor = s => {
@@ -391,6 +397,7 @@ aside{position:sticky;top:16px}
         const typedPeriods = stmts.filter((s, i) => origs[i].typed).map(s => fmtDate(s.periodEnd));
         if (typedPeriods.length) flags.push(`Original amount typed in for ${joinList(typedPeriods)}.`);
         const oSigned = origs.map(o => signed(o));
+        origSigned = oSigned;
         const oNet = oSigned.reduce((t, v) => t + v, 0);
         const word = v => v < 0 ? "refundable" : "payable";
         // Single period: full Amendment Summary with amounts. Several periods: only a reason, if one is given.
@@ -477,8 +484,8 @@ aside{position:sticky;top:16px}
     if (!multi) {
       L.push(`• Copy of ${Am}Activity Statement for the period **${fmtDate(s0.periodStart)} to ${fmtDate(s0.periodEnd)}** for ${ent}`);
     } else {
-      L.push(`Copy of ${Am}Activity Statements for the periods:`);
-      stmts.forEach(s => L.push(`• **${fmtDate(s.periodStart)} to ${fmtDate(s.periodEnd)}** for ${ent}`));
+      L.push(`Copy of the ${Am}Activity Statements for **${entity}** for the periods:`);
+      stmts.forEach(s => L.push(`• **${fmtDate(s.periodStart)} to ${fmtDate(s.periodEnd)}**`));
     }
     blank();
 
@@ -486,7 +493,21 @@ aside{position:sticky;top:16px}
     // so the bold total is always what the client actually pays or receives.
     const typeWord = both ? "Activity Statement" : TYPE;
     const payWord = typeWord;
-    if (multi) {
+    if (multi && amended && origSigned) {
+      // Original, amended and difference for each period, with a total row
+      const amdSigned = stmts.map(s => signed(s));
+      const diffs = stmts.map((s, i) => amdSigned[i] - origSigned[i]);
+      const col = v => money(Math.abs(v)) + (v < 0 ? " refund" : "");
+      const mixedDiff = diffs.some(v => v < 0) && diffs.some(v => v > 0);
+      const dcol = v => money(Math.abs(v)) + (mixedDiff ? (v < 0 ? " refund" : " payable") : "");
+      const sum = arr => arr.reduce((t, v) => t + v, 0);
+      L.push("The amended amounts are as follows:");
+      L.push("[[ROW-H]]Period|Original amount|Amended amount|Difference");
+      stmts.forEach((s, i) => L.push(`[[ROW]]${fmtDate(s.periodEnd)}|${col(origSigned[i])}|${col(amdSigned[i])}|${dcol(diffs[i])}`));
+      const td = sum(diffs);
+      L.push(`[[ROW-T]]Total|${col(sum(origSigned))}|${col(sum(amdSigned))}|${money(Math.abs(td)) + (mixedDiff ? (td < 0 ? " refund" : " payable") : "")}`);
+      blank();
+    } else if (multi) {
       const anyRefund = periodOwe.some(v => v < 0), anyPay = periodOwe.some(v => v > 0);
       const mixed = anyRefund && anyPay;
       L.push(mixed ? "Amounts payable and refundable are as follows:" : anyRefund ? "Amounts refundable are as follows:" : "Amounts payable are as follows:");
@@ -663,6 +684,22 @@ aside{position:sticky;top:16px}
         let prev = ""; for (let j = idx - 1; j >= 0; j--) if (lines[j].trim()) { prev = lines[j].trim(); break; }
         if (prev.replace(/\*+$/, "").endsWith(":")) continue;
         st.y -= GAP; if (para === 0) st.y -= AFTER_DATE; else if (para === 1) st.y -= AFTER_ADDRESS; para++;
+        continue;
+      }
+      const tm = line.match(/^\[\[ROW(-H|-T)?\]\](.*)$/);
+      if (tm) {
+        const kind = tm[1] || "", cells = tm[2].split("|");
+        const strong = kind !== "";
+        need(LINE + 4);
+        const grey = rgb(0.6, 0.6, 0.6);
+        if (kind === "-T") st.p.drawLine({ start: { x: LEFT, y: st.y + LINE - 3 }, end: { x: RIGHT, y: st.y + LINE - 3 }, thickness: 0.5, color: grey });
+        const f = strong ? bold : body;
+        st.p.drawText(cells[0], { x: LEFT, y: st.y, size: 10, font: f, color: black });
+        const RIGHTS = [LEFT + 230, LEFT + 330, RIGHT];
+        cells.slice(1).forEach((c, i) => st.p.drawText(c, { x: RIGHTS[i] - f.widthOfTextAtSize(c, 10), y: st.y, size: 10, font: f, color: black }));
+        if (kind === "-H") { st.p.drawLine({ start: { x: LEFT, y: st.y - 4 }, end: { x: RIGHT, y: st.y - 4 }, thickness: 0.5, color: grey }); st.y -= 3; }
+        if (kind === "-T") st.y -= 1;
+        st.y -= LINE;
         continue;
       }
       if (line.trim() === "[SIGNATURE]") {
@@ -1395,6 +1432,13 @@ function renderSheet(text, signer) {
       if (near(i, 1) === "[SIGNATURE]" || near(i, -1) === "[SIGNATURE]") return;
       if (near(i, -1).replace(/\*+$/, "").endsWith(":")) return;
       out.push('<div class="gap"></div>'); return;
+    }
+    const tm = l.match(/^\[\[ROW(-H|-T)?\]\](.*)$/);
+    if (tm) {
+      const prevRow = i > 0 && /^\[\[ROW/.test(lines[i - 1]), nextRow = i + 1 < lines.length && /^\[\[ROW/.test(lines[i + 1]);
+      const cells = tm[2].split("|").map((c, j) => `<td${j ? ' class="r"' : ""}>${esc(c)}</td>`).join("");
+      out.push(`${prevRow ? "" : '<table class="tbl">'}<tr class="${tm[1] === "-H" ? "th" : tm[1] === "-T" ? "tt" : ""}">${cells}</tr>${nextRow ? "" : "</table>"}`);
+      return;
     }
     if (l.trim() === "[SIGNATURE]") { const src = sigSrc(signer); out.push(src ? `<img class="sig" src="${src}" alt="Signature">` : '<p class="sig"></p>'); return; }
     const bul = isBul(l);
