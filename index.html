@@ -336,7 +336,7 @@ aside{top:20px!important;background:var(--ix-card);border:1px solid var(--ix-lin
     for (const r of all) {
       const parts = r.split(" | ").map(p => p.trim());
       const i = parts.indexOf("9");
-      if (i > 0 && /amount/i.test(parts[i - 1]) && parts[i + 1] && /\$/.test(parts[i + 1])) {
+      if (i > 0 && /amount|nothing due/i.test(parts[i - 1]) && parts[i + 1] && /\$/.test(parts[i + 1])) {
         const cents = toCents(parts[i + 1]);
         const refund = /refund|owes you/i.test(parts[i - 1]);
         st.amount = Math.abs(cents);
